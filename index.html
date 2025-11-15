@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Private Chat</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Simple scrollbar for chat */
+        .chat-window::-webkit-scrollbar {
+            width: 6px;
+        }
+        .chat-window::-webkit-scrollbar-thumb {
+            background-color: #4b5563; /* gray-600 */
+            border-radius: 20px;
+        }
+    </style>
+</head>
+<body class="h-full bg-gray-900 text-white flex flex-col antialiased">
+
+    <!-- Header -->
+    <header class="bg-gray-800 shadow-md p-4 w-full">
+        <h1 class="text-xl font-bold text-center text-white">Private Chat</h1>
+        <div class="mt-2 text-center text-sm">
+            <span class="font-medium text-gray-400">Status:</span>
+            <span id="status-text" class="text-yellow-400">Connecting...</span>
+        </div>
+        <div class="mt-2 text-center text-xs break-all">
+            <span class="font-medium text-gray-400">Your User ID:</span>
+            <span id="user-id-display" class="text-gray-300 font-mono">Loading...</span>
+        </div>
+    </header>
+
+    <!-- Error/Notification Bar -->
+    <div id="error-bar" class="hidden p-3 bg-red-600 text-white text-center font-medium">
+        <span id="error-text"></span>
+    </div>
+
+    <!-- Main Content -->
+    <div id="app-content" class="flex-1 flex flex-col overflow-hidden">
+
+        <!-- Connection UI -->
+        <div id="connection-ui" class="p-6 w-full max-w-md mx-auto mt-8">
+            <div class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                <h2 class="text-lg font-semibold text-center mb-4">Start a Chat</h2>
+                <p class="text-sm text-gray-400 mb-4 text-center">Share your User ID with your partner and enter theirs below.</p>
+                <div class="flex flex-col gap-4">
+                    <input
+                        type="text"
+                        id="partner-id-input"
+                        placeholder="Enter Partner's User ID"
+                        class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <button
+                        id="connect-button"
+                        class="w-full px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled
+                    >
+                        Connect
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat UI (Hidden by default) -->
+        <div id="chat-ui" class="hidden flex-1 flex flex-col p-4 overflow-hidden">
+            <div class="text-center mb-2">
+                <span class="text-sm text-gray-400">Chatting with:</span>
+                <span id="partner-id-display" class="text-sm font-mono text-gray-300"></span>
+                <span id="partner-status" class="text-sm ml-1 text-gray-500">(Offline)</span>
+            </div>
+            
+            <!-- Chat Messages Window -->
+            <div id="chat-messages" class="chat-window flex-1 overflow-y-auto bg-gray-800 rounded-lg p-4 flex flex-col gap-3">
+                <!-- Messages will be injected here -->
+            </div>
+
+            <!-- Message Input -->
+            <form id="message-form" class="mt-4 flex gap-2">
+                <input
+                    type="text"
+                    id="message-input"
+                    placeholder="Type your message..."
+                    class="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    autocomplete="off"
+                />
+                <button
+                    type="submit"
+                    class="px-5 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+                >
+                    Send
+                </button>
+            </form>
+        </div>
+
+    </div>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        // Import Firebase v9 SDK
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            onSnapshot, 
+            setLogLevel,
+            serverTimestamp 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Global Variables ---
+        let db, auth;
+        let userId = null;
+        let partnerId = null;
+        let chatRoomId = null;
+        let chatUnsubscribe = null;
+        let presenceInterval = null;
+        let partnerPresenceUnsubscribe = null;
+        
+        // Use a default appId, but it won't work for your project.
+        // We get the real one from the config object below.
+        const appId = 'default-app-id'; 
+
+        // --- DOM Elements ---
+        const statusText = document.getElementById('status-text');
+        const userIdDisplay = document.getElementById('user-id-display');
+        const connectButton = document.getElementById('connect-button');
+        const partnerIdInput = document.getElementById('partner-id-input');
+        
+        const connectionUI = document.getElementById('connection-ui');
+        const chatUI = document.getElementById('chat-ui');
+        const partnerIdDisplay = document.getElementById('partner-id-display');
+        const partnerStatus = document.getElementById('partner-status');
+        const chatMessages = document.getElementById('chat-messages');
+        const messageForm = document.getElementById('message-form');
+        const messageInput = document.getElementById('message-input');
+        
+        const errorBar = document.getElementById('error-bar');
+        const errorText = document.getElementById('error-text');
+
+        // --- Utility Functions ---
+
+        /**
+         * Shows an error message in the error bar.
+         * @param {string} message - The error message to display.
+         */
+        function showError(message) {
+            console.error(message); // Also log to console
+            errorText.textContent = message;
+            errorBar.classList.remove('hidden');
+            // Hide after 5 seconds
+            setTimeout(() => {
+                errorBar.classList.add('hidden');
+            }, 5000);
+        }
+
+        /**
+         * Renders the chat messages to the screen.
+         * @param {Array} messages - An array of message objects.
+         */
+        function renderMessages(messages = []) {
+            chatMessages.innerHTML = ''; // Clear existing messages
+            
+            // Sort messages by timestamp
+            messages.sort((a, b) => a.timestamp - b.timestamp);
+
+            messages.forEach(msg => {
+                const isMe = msg.senderId === userId;
+                const messageBubble = document.createElement('div');
+                messageBubble.textContent = msg.text;
+                
+                // Common styles
+                messageBubble.classList.add('max-w-xs', 'p-3', 'rounded-xl', 'break-words', 'shadow');
+                
+                if (isMe) {
+                    messageBubble.classList.add('ml-auto', 'bg-blue-600', 'text-white');
+                } else {
+                    messageBubble.classList.add('mr-auto', 'bg-gray-700', 'text-white');
+                }
+                
+                chatMessages.appendChild(messageBubble);
+            });
+
+            // Scroll to the bottom
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        /**
+         * Updates this user's presence document with a current timestamp.
+         */
+        async function updatePresence() {
+            if (!db || !userId) return;
+            try {
+                // Use the projectId from your config
+                const presenceDocRef = doc(db, 'artifacts', 'privatechat-8076d', 'public', 'data', 'presence', userId);
+                // Use setDoc with merge to create/update the document
+                await setDoc(presenceDocRef, { 
+                    last_seen: serverTimestamp() 
+                }, { merge: true });
+            } catch (error) {
+                console.warn("Failed to update presence:", error.message);
+            }
+        }
+
+        /**
+         * Listens to the partner's presence document.
+         * @param {string} pid - The Partner's User ID.
+         */
+        function listenToPartnerPresence(pid) {
+            if (partnerPresenceUnsubscribe) {
+                partnerPresenceUnsubscribe();
+            }
+            if (!pid) return;
+
+            // Use the projectId from your config
+            const presenceDocRef = doc(db, 'artifacts', 'privatechat-8076d', 'public', 'data', 'presence', pid);
+
+            partnerPresenceUnsubscribe = onSnapshot(presenceDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    const lastSeen = data.last_seen;
+                    
+                    if (lastSeen) {
+                        // Firestore timestamps can be null if server just set it
+                        const millis = lastSeen.toMillis();
+                        // Check if last seen was within the last 15 seconds
+                        const isOnline = (Date.now() - millis) < 15000; 
+                        
+                        if (isOnline) {
+                            partnerStatus.textContent = '(Online)';
+                            partnerStatus.classList.remove('text-gray-500');
+                            partnerStatus.classList.add('text-green-400');
+                        } else {
+                            partnerStatus.textContent = '(Offline)';
+                            partnerStatus.classList.remove('text-green-400');
+                            partnerStatus.classList.add('text-gray-500');
+                        }
+                    } else {
+                        partnerStatus.textContent = '(Offline)';
+                        partnerStatus.classList.remove('text-green-400');
+                        partnerStatus.classList.add('text-gray-500');
+                    }
+                } else {
+                    // No presence document exists for this partner
+                    partnerStatus.textContent = '(Offline)';
+                    partnerStatus.classList.remove('text-green-400');
+                    partnerStatus.classList.add('text-gray-500');
+                }
+            }, (error) => {
+                console.error("Error listening to partner presence:", error.message);
+                partnerStatus.textContent = '(Status Unknown)';
+                partnerStatus.classList.remove('text-green-400');
+                partnerStatus.classList.add('text-gray-500');
+            });
+        }
+
+
+        /**
+         * Listens for real-time updates to the chat room.
+         */
+        function listenToChat() {
+            // Unsubscribe from any previous listener
+            if (chatUnsubscribe) {
+                chatUnsubscribe();
+            }
+            
+            if (!chatRoomId) {
+                showError("No chat room ID set.");
+                return;
+            }
+
+            // Use the projectId from your config
+            const chatDocRef = doc(db, 'artifacts', 'privatechat-8076d', 'public', 'data', 'chat_rooms', chatRoomId);
+            
+            chatUnsubscribe = onSnapshot(chatDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    renderMessages(data.messages || []);
+                } else {
+                    // Document doesn't exist (e.g., first chat)
+                    renderMessages([]);
+                }
+            }, (error) => {
+                showError("Error listening to chat: " + error.message);
+            });
+        }
+
+        // --- Event Handlers ---
+
+        /**
+         * Handles the "Connect" button click.
+         */
+        function handleConnect() {
+            const pid = partnerIdInput.value.trim();
+            
+            if (!pid) {
+                showError("Please enter a Partner User ID.");
+                return;
+            }
+            if (pid === userId) {
+                showError("You cannot chat with yourself.");
+                return;
+            }
+            
+            partnerId = pid;
+            
+            // Create a deterministic, sorted room ID
+            const ids = [userId, partnerId].sort();
+            chatRoomId = ids.join('_');
+            
+            console.log(`Connecting to chat room: ${chatRoomId}`);
+            
+            // Switch UI
+            connectionUI.classList.add('hidden');
+            chatUI.classList.remove('hidden');
+            chatUI.classList.add('flex'); // Add flex to make it display correctly
+            partnerIdDisplay.textContent = partnerId;
+            
+            // Start listening to the chat
+            listenToChat();
+            // Start listening to the partner's presence
+            listenToPartnerPresence(partnerId);
+        }
+
+        /**
+         * Handles sending a new message.
+         * @param {Event} e - The form submit event.
+         */
+        async function handleSendMessage(e) {
+            e.preventDefault();
+            const messageText = messageInput.value.trim();
+            
+            if (!messageText) return;
+            if (!chatRoomId) {
+                showError("Not connected to a chat room.");
+                return;
+            }
+
+            const newMessage = {
+                senderId: userId,
+                text: messageText,
+                timestamp: Date.now() // Use client timestamp for sorting
+            };
+
+            // Use the projectId from your config
+            const chatDocRef = doc(db, 'artifacts', 'privatechat-8076d', 'public', 'data', 'chat_rooms', chatRoomId);
+            
+            try {
+                // Get the current document
+                const docSnap = await getDoc(chatDocRef);
+                
+                let currentMessages = [];
+                if (docSnap.exists()) {
+                    currentMessages = docSnap.data().messages || [];
+                }
+                
+                // Add the new message
+                const updatedMessages = [...currentMessages, newMessage];
+                
+                // Set the document with the new messages array
+                await setDoc(chatDocRef, { messages: updatedMessages });
+                
+                messageInput.value = ''; // Clear input
+            } catch (error) {
+                showError("Failed to send message: " + error.message);
+            }
+            // No need to manually render, onSnapshot will handle it.
+        }
+
+        // --- Firebase Initialization ---
+
+        /**
+         * Signs the user in, either with a token or anonymously.
+         */
+        async function signIn() {
+            try {
+                // We are not using __initial_auth_token here, as we're using a specific project
+                await signInAnonymously(auth);
+            } catch (error) {
+                showError("Authentication failed: " + error.message);
+                statusText.textContent = 'Auth Failed';
+                statusText.classList.replace('text-yellow-400', 'text-red-500');
+            }
+        }
+
+        /**
+         * Initializes Firebase app and services.
+         */
+        function initializeFirebase() {
+            try {
+                // *** THIS IS YOUR CONFIG ***
+                // I've filled this in from your google-services.json file.
+                // You just need to add your *web* app's 'appId' from the Firebase console.
+                const firebaseConfig = {
+                    apiKey: "AIzaSyCqTG25Cm_A8kpDBzpYFVXZBggYD-aURFQ",
+                    authDomain: "privatechat-8076d.firebaseapp.com",
+                    projectId: "privatechat-8076d",
+                    storageBucket: "privatechat-8076d.firebasestorage.app",
+                    messagingSenderId: "43593347951",
+                    appId: "1:43593347951:web:a47526dc86e2899676ae9a",
+                    measurementId: "G-S7GTFRB1DY"
+                };
+
+                // Check if the user has added the appId
+                if (firebaseConfig.appId.includes("PASTE_YOUR")) {
+                     showError("Please add your web app's 'appId' to the firebaseConfig object in the code (around line 365).");
+                     statusText.textContent = 'Config Error';
+                     statusText.classList.remove('text-yellow-400');
+                     statusText.classList.add('text-red-500');
+                     connectButton.disabled = true;
+                     return;
+                }
+                
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('Debug'); // Enable debug logging
+
+                // Listen for auth state changes
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        // User is signed in
+                        userId = user.uid;
+                        statusText.textContent = 'Authenticated';
+                        statusText.classList.replace('text-yellow-400', 'text-green-500');
+                        userIdDisplay.textContent = userId;
+                        connectButton.disabled = false; // Enable connect button
+
+                        // Start presence heartbeat
+                        if (presenceInterval) {
+                            clearInterval(presenceInterval);
+                        }
+                        updatePresence(); // Call immediately on sign-in
+                        presenceInterval = setInterval(updatePresence, 10000); // And every 10s
+                    } else {
+                        // User is signed out or not yet signed in
+                        userId = null;
+                        statusText.textContent = 'Authenticating...';
+                        statusText.classList.replace('text-green-500', 'text-yellow-400');
+                        connectButton.disabled = true;
+                        
+                        // Stop presence heartbeat
+                        if (presenceInterval) {
+                            clearInterval(presenceInterval);
+                            presenceInterval = null;
+                        }
+                        // Stop listening to partner
+                        if (partnerPresenceUnsubscribe) {
+                            partnerPresenceUnsubscribe();
+                            partnerPresenceUnsubscribe = null;
+                        }
+
+                        signIn(); // Attempt to sign in
+                    }
+                });
+
+            } catch (error) {
+                showError("Failed to initialize Firebase: " + error.message);
+                statusText.textContent = 'Error';
+                statusText.classList.add('text-red-500');
+            }
+        }
+
+        // --- App Entry Point ---
+        window.onload = () => {
+            initializeFirebase();
+            
+            // Attach event listeners
+            connectButton.addEventListener('click', handleConnect);
+            messageForm.addEventListener('submit', handleSendMessage);
+        };
+    </script>
+</body>
+</html>
