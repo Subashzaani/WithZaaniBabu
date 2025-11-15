@@ -120,7 +120,9 @@
             setDoc, 
             onSnapshot, 
             setLogLevel,
-            serverTimestamp 
+            serverTimestamp,
+            updateDoc,
+            arrayUnion
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Global Variables ---
@@ -361,19 +363,13 @@
             const chatDocRef = doc(db, 'artifacts', 'privatechat-8076d', 'public', 'data', 'chat_rooms', chatRoomId);
             
             try {
-                // Get the current document
-                const docSnap = await getDoc(chatDocRef);
-                
-                let currentMessages = [];
-                if (docSnap.exists()) {
-                    currentMessages = docSnap.data().messages || [];
-                }
-                
-                // Add the new message
-                const updatedMessages = [...currentMessages, newMessage];
-                
-                // Set the document with the new messages array
-                await setDoc(chatDocRef, { messages: updatedMessages });
+                // Use setDoc with merge:true and arrayUnion.
+                // This atomically adds the new message to the 'messages' array.
+                // It's safer than get/set and prevents race conditions.
+                // It will also create the document if it doesn't exist.
+                await setDoc(chatDocRef, { 
+                    messages: arrayUnion(newMessage) 
+                }, { merge: true });
                 
                 messageInput.value = ''; // Clear input
             } catch (error) {
