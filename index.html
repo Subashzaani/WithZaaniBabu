@@ -72,19 +72,30 @@
 
         <!-- Chat UI (Hidden by default) -->
         <div id="chat-ui" class="hidden flex-1 flex flex-col p-4 overflow-hidden">
-            <div class="text-center mb-2">
-                <span class="text-sm text-gray-400">Chatting with:</span>
-                <span id="partner-id-display" class="text-sm font-mono text-gray-300"></span>
-                <span id="partner-status" class="text-sm ml-1 text-gray-500">(Offline)</span>
+            <div class="text-center mb-2 flex items-center justify-center gap-4">
+                <div>
+                    <span class="text-sm text-gray-400">Chatting with:</span>
+                    <span id="partner-id-display" class="text-sm font-mono text-gray-300"></span>
+                    <span id="partner-status" class="text-sm ml-1 text-gray-500">(Offline)</span>
+                </div>
+                <!-- Disconnect Button -->
+                <button id="disconnect-button" class="px-3 py-1 bg-gray-600 text-white text-xs font-medium rounded-lg hover:bg-gray-700">
+                    Disconnect
+                </button>
             </div>
             
             <!-- Chat Messages Window -->
-            <div id="chat-messages" class="chat-window flex-1 overflow-y-auto bg-gray-800 rounded-lg p-4 flex flex-col gap-3">
+            <div id="chat-messages" class="chat-window flex-1 overflow-y-auto bg-gray-800 rounded-lg p-4 flex flex-col gap-2">
                 <!-- Messages will be injected here -->
             </div>
 
+            <!-- *** NEW: Typing Indicator *** -->
+            <div id="typing-indicator" class="h-5 text-sm text-gray-400 italic px-4 hidden">
+                Partner is typing...
+            </div>
+
             <!-- Message Input -->
-            <form id="message-form" class="mt-4 flex gap-2">
+            <form id="message-form" class="mt-2 flex gap-2">
                 <input
                     type="text"
                     id="message-input"
@@ -134,6 +145,10 @@
         let presenceInterval = null;
         let partnerPresenceUnsubscribe = null;
         
+        // *** NEW: Typing indicator state ***
+        let isTyping = false;
+        let typingTimeout = null;
+
         // Use a default appId, but it won't work for your project.
         // We get the real one from the config object below.
         const appId = 'default-app-id'; 
@@ -151,6 +166,8 @@
         const chatMessages = document.getElementById('chat-messages');
         const messageForm = document.getElementById('message-form');
         const messageInput = document.getElementById('message-input');
+        const disconnectButton = document.getElementById('disconnect-button');
+        const typingIndicator = document.getElementById('typing-indicator'); // *** NEW ***
         
         const errorBar = document.getElementById('error-bar');
         const errorText = document.getElementById('error-text');
@@ -178,24 +195,48 @@
         function renderMessages(messages = []) {
             chatMessages.innerHTML = ''; // Clear existing messages
             
-            // Sort messages by timestamp
-            messages.sort((a, b) => a.timestamp - b.timestamp);
+            // Sort messages by timestamp (if timestamps exist)
+            messages.sort((a, b) => {
+                const tsA = a.timestamp ? a.timestamp.toMillis() : 0;
+                const tsB = b.timestamp ? b.timestamp.toMillis() : 0;
+                return tsA - tsB;
+            });
 
             messages.forEach(msg => {
                 const isMe = msg.senderId === userId;
+                
+                // Create a wrapper for bubble + timestamp
+                const messageWrapper = document.createElement('div');
+                messageWrapper.classList.add('flex', 'flex-col', 'max-w-xs', 'shadow');
+
                 const messageBubble = document.createElement('div');
                 messageBubble.textContent = msg.text;
+                messageBubble.classList.add('p-3', 'rounded-xl', 'break-words');
                 
-                // Common styles
-                messageBubble.classList.add('max-w-xs', 'p-3', 'rounded-xl', 'break-words', 'shadow');
+                // *** NEW: Timestamp display ***
+                const timeText = document.createElement('span');
+                timeText.classList.add('text-xs', 'text-gray-400', 'mt-1');
                 
-                if (isMe) {
-                    messageBubble.classList.add('ml-auto', 'bg-blue-600', 'text-white');
+                if (msg.timestamp) {
+                    const date = msg.timestamp.toDate();
+                    timeText.textContent = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 } else {
-                    messageBubble.classList.add('mr-auto', 'bg-gray-700', 'text-white');
+                    timeText.textContent = 'Sending...';
+                }
+
+                if (isMe) {
+                    messageWrapper.classList.add('ml-auto', 'items-end');
+                    messageBubble.classList.add('bg-blue-600', 'text-white', 'rounded-br-none');
+                    timeText.classList.add('text-right');
+                } else {
+                    messageWrapper.classList.add('mr-auto', 'items-start');
+                    messageBubble.classList.add('bg-gray-700', 'text-white', 'rounded-bl-none');
+                    timeText.classList.add('text-left');
                 }
                 
-                chatMessages.appendChild(messageBubble);
+                messageWrapper.appendChild(messageBubble);
+                messageWrapper.appendChild(timeText);
+                chatMessages.appendChild(messageWrapper);
             });
 
             // Scroll to the bottom
@@ -203,17 +244,27 @@
         }
 
         /**
-         * Updates this user's presence document with a current timestamp.
+         * Updates this user's presence document with a current timestamp
+         * and typing status.
+         * @param {boolean} [typingStatus] - Optional typing status.
          */
-        async function updatePresence() {
+        async function updatePresence(typingStatus) {
             if (!db || !userId) return;
+            
+            const presenceData = { 
+                last_seen: serverTimestamp() 
+            };
+
+            // Only include isTyping if it's explicitly provided
+            if (typingStatus !== undefined) {
+                presenceData.isTyping = typingStatus;
+            }
+
             try {
                 // Use the projectId from your config
                 const presenceDocRef = doc(db, 'artifacts', 'privatechat-8076d', 'public', 'data', 'presence', userId);
                 // Use setDoc with merge to create/update the document
-                await setDoc(presenceDocRef, { 
-                    last_seen: serverTimestamp() 
-                }, { merge: true });
+                await setDoc(presenceDocRef, presenceData, { merge: true });
             } catch (error) {
                 console.warn("Failed to update presence:", error.message);
             }
@@ -227,6 +278,12 @@
             if (partnerPresenceUnsubscribe) {
                 partnerPresenceUnsubscribe();
             }
+            // Reset status display on new listen
+            partnerStatus.textContent = '(Offline)';
+            partnerStatus.classList.remove('text-green-400');
+            partnerStatus.classList.add('text-gray-500');
+            typingIndicator.classList.add('hidden'); // *** NEW ***
+
             if (!pid) return;
 
             // Use the projectId from your config
@@ -237,11 +294,10 @@
                     const data = docSnap.data();
                     const lastSeen = data.last_seen;
                     
+                    // --- Check Online Status ---
                     if (lastSeen) {
-                        // Firestore timestamps can be null if server just set it
                         const millis = lastSeen.toMillis();
-                        // Check if last seen was within the last 15 seconds
-                        const isOnline = (Date.now() - millis) < 15000; 
+                        const isOnline = (Date.now() - millis) < 15000; // 15 seconds
                         
                         if (isOnline) {
                             partnerStatus.textContent = '(Online)';
@@ -257,17 +313,27 @@
                         partnerStatus.classList.remove('text-green-400');
                         partnerStatus.classList.add('text-gray-500');
                     }
+
+                    // --- *** NEW: Check Typing Status *** ---
+                    if (data.isTyping) {
+                        typingIndicator.classList.remove('hidden');
+                    } else {
+                        typingIndicator.classList.add('hidden');
+                    }
+
                 } else {
-                    // No presence document exists for this partner
+                    // No presence document exists
                     partnerStatus.textContent = '(Offline)';
                     partnerStatus.classList.remove('text-green-400');
                     partnerStatus.classList.add('text-gray-500');
+                    typingIndicator.classList.add('hidden');
                 }
             }, (error) => {
                 console.error("Error listening to partner presence:", error.message);
                 partnerStatus.textContent = '(Status Unknown)';
                 partnerStatus.classList.remove('text-green-400');
                 partnerStatus.classList.add('text-gray-500');
+                typingIndicator.classList.add('hidden');
             });
         }
 
@@ -353,20 +419,22 @@
                 return;
             }
 
+            // *** NEW: Stop "typing" status on send ***
+            if (typingTimeout) clearTimeout(typingTimeout);
+            isTyping = false;
+            updatePresence(false);
+
             const newMessage = {
                 senderId: userId,
                 text: messageText,
-                timestamp: Date.now() // Use client timestamp for sorting
+                timestamp: serverTimestamp() // *** NEW: Add timestamp ***
             };
-
+            
             // Use the projectId from your config
             const chatDocRef = doc(db, 'artifacts', 'privatechat-8076d', 'public', 'data', 'chat_rooms', chatRoomId);
             
             try {
-                // Use setDoc with merge:true and arrayUnion.
-                // This atomically adds the new message to the 'messages' array.
-                // It's safer than get/set and prevents race conditions.
-                // It will also create the document if it doesn't exist.
+                // Atomically add the new message to the 'messages' array
                 await setDoc(chatDocRef, { 
                     messages: arrayUnion(newMessage) 
                 }, { merge: true });
@@ -374,14 +442,62 @@
                 messageInput.value = ''; // Clear input
             } catch (error) {
                 showError("Failed to send message: " + error.message);
+                console.error("Send message error:", error);
             }
-            // No need to manually render, onSnapshot will handle it.
         }
 
-        // --- Firebase Initialization ---
+        /**
+         * *** NEW: Handles the "Disconnect" button click. ***
+         */
+        function handleDisconnect() {
+            // Stop all listeners
+            if (chatUnsubscribe) {
+                chatUnsubscribe();
+                chatUnsubscribe = null;
+            }
+            if (partnerPresenceUnsubscribe) {
+                partnerPresenceUnsubscribe();
+                partnerPresenceUnsubscribe = null;
+            }
+            
+            // Clear state
+            partnerId = null;
+            chatRoomId = null;
+            
+            // Switch UI
+            chatUI.classList.add('hidden');
+            chatUI.classList.remove('flex');
+            connectionUI.classList.remove('hidden');
+            
+            // Clear inputs/displays
+            partnerIdInput.value = '';
+            chatMessages.innerHTML = '';
+        }
 
         /**
-         * Signs the user in, either with a token or anonymously.
+         * *** NEW: Handles the user typing in the input. ***
+         */
+        function handleTypingInput() {
+            if (!isTyping) {
+                // User just started typing
+                isTyping = true;
+                updatePresence(true);
+            }
+
+            // Reset the timeout
+            if (typingTimeout) {
+                clearTimeout(typingTimeout);
+            }
+
+            // Set a timeout to mark as "not typing" after 2 seconds
+            typingTimeout = setTimeout(() => {
+                isTyping = false;
+                updatePresence(false);
+            }, 2000);
+        }
+
+        /**
+         * Signs the user in anonymously.
          */
         async function signIn() {
             try {
@@ -467,6 +583,8 @@
             // Attach event listeners
             connectButton.addEventListener('click', handleConnect);
             messageForm.addEventListener('submit', handleSendMessage);
+            disconnectButton.addEventListener('click', handleDisconnect);
+            messageInput.addEventListener('input', handleTypingInput); // *** NEW ***
         };
     </script>
 </body>
