@@ -404,8 +404,6 @@
         function initializeFirebase() {
             try {
                 // *** THIS IS YOUR CONFIG ***
-                // I've filled this in from your google-services.json file.
-                // You just need to add your *web* app's 'appId' from the Firebase console.
                 const firebaseConfig = {
                     apiKey: "AIzaSyCqTG25Cm_A8kpDBzpYFVXZBggYD-aURFQ",
                     authDomain: "privatechat-8076d.firebaseapp.com",
@@ -415,16 +413,6 @@
                     appId: "1:43593347951:web:a47526dc86e2899676ae9a",
                     measurementId: "G-S7GTFRB1DY"
                 };
-
-                // Check if the user has added the appId
-                if (firebaseConfig.appId.includes("PASTE_YOUR")) {
-                     showError("Please add your web app's 'appId' to the firebaseConfig object in the code (around line 365).");
-                     statusText.textContent = 'Config Error';
-                     statusText.classList.remove('text-yellow-400');
-                     statusText.classList.add('text-red-500');
-                     connectButton.disabled = true;
-                     return;
-                }
                 
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
